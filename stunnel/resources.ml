@@ -39,6 +39,10 @@ module Scope = struct
     val scope: t T.t
   end
 
+  let any _ _ =
+    (* should never be called *)
+    assert false
+
   let with_local f =
     (* Generates a new unique type that can be used to prevent
      * accidental resource leaks (applies types taking L.scope as parameter): {|
@@ -59,7 +63,7 @@ module type Resource = sig
   type raw
   type 'scope t
 
-  val with_borrow: (raw -> 'a) -> _ t -> 'a
+  val borrow: _ t -> raw
 
   val move : into:'b Scope.T.t -> 'a t -> 'b t
 
@@ -100,12 +104,12 @@ module Make(R: Closeable) = struct
     let r1, r2 = f () in
     of_raw scope r1, of_raw scope r2
 
-  let with_borrow f t = match !t with
+  let borrow t = match !t with
     | None -> raise UseAfterMove
-    | Some r -> f r
+    | Some r -> r
 
   let move ~into t =
-    let r = with_borrow (of_raw into) t in
+    let r = of_raw into (borrow t) in
     t := None;
     r
 
@@ -127,6 +131,49 @@ module Unix = struct
     FD.allocate2 scope (fun () -> Unix.socketpair domain typ protocol)
 
   let openfile ~scope path flags perm = FD.allocate scope (fun () -> Unix.openfile path flags perm)
+end
+
+module Table(R: Resource) = struct
+  type scope
+  type 'a t = ('a, scope R.t) Hashtbl.t
+  let scope t _ = ()
+   (* destructor is handled by clear/reset/remove below *)
+
+  let create n = Hashtbl.create n
+
+  let clear t =
+    Hashtbl.iter (fun _ -> R.free) t;
+    Hashtbl.clear t
+
+  let reset t =
+    clear t;
+    Hashtbl.reset t
+
+  let copy = Hashtbl.copy
+
+  let add (t:'a t) x y =
+    Hashtbl.add t x (R.move ~into:(scope t) y)
+
+  let find (t:'a t) x = Hashtbl.find t x
+
+  let mem t x = Hashtbl.mem t x
+
+  let remove t x =
+    match Hashtbl.find_opt t x with
+    | None -> ()
+    | Some r ->
+      R.free r;
+      Hashtbl.remove t x
+
+  let replace t x y =
+    remove t x;
+    add t x y
+
+  let iter = Hashtbl.iter
+
+  let fold = Hashtbl.fold
+
+  let length = Hashtbl.length
 end
 
 (* TODO: data structure nesting in table *)

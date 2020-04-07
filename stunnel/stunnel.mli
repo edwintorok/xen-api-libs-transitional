@@ -28,8 +28,8 @@ type pid =
 val getpid: pid -> int
 
 (** Represents an active stunnel connection *)
-type t = { mutable pid: pid;
-           fd: Unix.file_descr;
+type 'a t = { mutable pid: pid;
+           fd: 'a Resources.FD.t;
            host: string;
            port: int;
            connected_time: float; (** time when the connection opened, for 'early retirement' *)
@@ -49,13 +49,19 @@ val connect :
   ?write_to_log:(string -> unit) ->
   ?verify_cert:bool ->
   ?extended_diagnosis:bool ->
-  string -> int -> t
+  'a Resources.Scope.T.t ->
+  string -> int -> 'a t
 
 (** Disconnects from stunnel and cleans up *)
-val disconnect : ?wait:bool -> ?force:bool -> t -> unit
+val disconnect : ?wait:bool -> ?force:bool -> 'a t -> unit
 
-val diagnose_failure : t -> unit
+val diagnose_failure : 'a t -> unit
 
 val test : string -> int -> unit
 
 val must_verify_cert : bool option -> bool
+
+type raw = Resources.Scope.any t
+val borrow: 'a t -> raw
+val free: 'a t -> unit
+val move: into:('b Resources.Scope.T.t) -> 'a t -> 'b t
