@@ -191,9 +191,11 @@ let rec disconnect ?(wait = true) ?(force = false) x =
   | Nopid -> ()
 
 
-type raw = { t: 'a. 'a t }
-let borrow t = { t }
+type raw = Resources.Scope.any t
 let move ~into t = { t with fd = Resources.FD.move ~into t.fd }
+let borrow (t:'a t) =
+  let into = failwith "TODO" in
+  move ~into t
 let free t = disconnect t
 
 (* With some probability, stunnel fails during its startup code before it reads

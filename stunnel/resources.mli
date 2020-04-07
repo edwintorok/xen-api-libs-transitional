@@ -1,62 +1,44 @@
-module type Closeable = sig
+(** At the lowest level we have resources with an associated destructor.
+ * Using Rust terminology we call this 'drop': typically closing, deallocating, or otherwise
+ * releasing a resource such as a file descriptor or a lock.
+ * Also called a destructor in other languages.
+ * *)
+module type Dropable = sig
+  (** a resource *)
   type t
-  val close : t -> unit
+
+  (** [drop resource] releases [resource]. E.g. close a file, unlock a mutex, etc.
+   * Calling this multiple times may result in undefined behaviour.
+   * *)
+  val drop: t -> unit
 end
 
-val on_close_exception_hook: (exn -> unit) ref
+exception UseAfterRelease
 
-module Scope: sig
-  module T : sig
-    type 'a t
-  end
-  module type S = sig
-    type t
-    val scope: t T.t
-  end
-  type any
-  val any: 'a T.t -> any T.t
+(** A type that protects against double free and use after free *)
+module SafeDropable(D: Dropable): sig
+  (** D.t wrapped *)
+  type t
 
-  val with_local: ((module S) -> 'a) -> 'a
+  type raw = D.t
+
+  (** [allocate ?loc ?name f] wraps the resource allocated by [f]
+   * with an optional location, name and leak tracking.
+   * A GC finaliser is attached to help debug leaks, it is only a safeguard,
+   * it should not be relied upon for proper leak avoidance!
+   * Example usage: [allocate ~loc:__LOC__ ~name:"pipe for stunnel config"]
+   * *)
+  val allocate: ?loc:string -> ?name:string -> (unit -> D.t) -> t
+
+  (** [borrow t] gives access to the underlying raw type.
+   * Access to the returned value should not outlive [t] itself.
+   * This cannot be checked by the type system or at runtime in general!
+   * (file descriptors are typically integers, with no finalisers attached).
+   * *)
+  val borrow: t -> raw
+
+  (** [release_exn resource] like [drop resource] but raises an exception
+   * if already dropped *)
+  val release_exn: t -> unit
 end
 
-exception UseAfterMove
-module type Resource = sig
-  type raw
-  type 'scope t
-
-  val borrow: _ t -> raw
-
-  val move : into:'b Scope.T.t -> 'a t -> 'b t
-
-  val free: _ t -> unit
-end
-
-module Make(R: Closeable) : Resource with type raw = R.t
-
-module FD: Resource with type raw = Unix.file_descr
-
-module Unix: sig
-  val pipe: scope:'a Scope.T.t -> 'a FD.t * 'a FD.t
-  val socketpair: scope:'a Scope.T.t -> Unix.socket_domain -> Unix.socket_type -> int -> 'a FD.t * 'a FD.t
-  val openfile: scope:'a Scope.T.t -> string -> Unix.open_flag list -> int -> 'a FD.t
-end
-
-module Table(R: Resource): sig
-  type scope
-  type 'a t
-
-  val create : int -> 'a t
-  val add: 'a t -> 'a -> 'b R.t -> unit
-  val clear : 'a t -> unit
-  val reset : 'a t -> unit
-  val copy : 'a t -> 'a t
-  val add : 'a t -> 'a -> 'b R.t -> unit
-  val find: 'a t -> 'a -> scope R.t
-  val mem: 'a t -> 'a -> bool
-  val remove: 'a t -> 'a -> unit
-  val replace: 'a t -> 'a -> _ R.t -> unit
-  val iter: ('a -> scope R.t -> unit) -> 'a t -> unit
-  val fold: ('a -> scope R.t -> 'b -> 'b) -> 'a t -> 'b -> 'b
-
-  val length: 'a t -> int
-end
