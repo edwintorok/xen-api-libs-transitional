@@ -30,17 +30,6 @@ let with_local f =
     (fun () -> f (fun cleanup -> Stack.push cleanup s))
     (fun () -> Stack.iter exec_noerr s)
 
-(*: sig
-  module T : sig
-    type 'a t
-  end
-  module type S = sig
-    type t
-    val scope: t T.t
-  end
-
-  val with_local: ((module S) -> 'a) -> 'a
-end = *)
 module Scope = struct
   module T = struct
     type 'a t = (unit -> unit) -> unit
@@ -77,6 +66,9 @@ module type Resource = sig
   val free: _ t -> unit
 end
 
+(* TODO: log *)
+let on_resource_leak = ref ignore
+
 module Make(R: Closeable) = struct
   type raw = R.t
   type 'scope t = raw option ref
@@ -84,11 +76,22 @@ module Make(R: Closeable) = struct
   let close_ifactive t =
     match !t with
     | None -> () (* already closed/moved *)
-    | Some active -> R.close active
+    | Some active ->
+      (* set it to none first, in case close fails *)
+      t := None;
+      R.close active
+
+  let finaliser t =
+    match !t with
+    | None -> () (* already moved/closed *)
+    | Some leaked ->
+      !on_resource_leak ();
+      close_ifactive t
 
   let of_raw scope raw =
     let t = ref (Some raw) in
     scope (fun () -> close_ifactive t);
+    Gc.finalise finaliser t;
     t
 
   let allocate scope f = of_raw scope @@ f ()
@@ -125,6 +128,5 @@ module Unix = struct
 
   let openfile ~scope path flags perm = FD.allocate scope (fun () -> Unix.openfile path flags perm)
 end
-(* TODO: thread local "scope" on the stack *)
 
 (* TODO: data structure nesting in table *)
